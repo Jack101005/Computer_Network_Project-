@@ -16,6 +16,7 @@ public class FTPClient {
         this.host = host;
         this.port = port;
         loginSocket = new Socket(host, port);
+        loginSocket.setSoTimeout(15000);
         Network_in = new BufferedReader(new InputStreamReader(loginSocket.getInputStream()));
         Network_out = new BufferedWriter(new OutputStreamWriter(loginSocket.getOutputStream()));
         readResponse();
@@ -32,19 +33,21 @@ public class FTPClient {
             return new FTPResponse(-1, "No response at all");
         }
         StringBuilder sb = new StringBuilder(signal);
-    if (signal.length() >= 4 && signal.charAt(3) == '-') {
-        String code = signal.substring(0, 3);
-        while (true) {
-            String next = Network_in.readLine();
-            if (next == null) break;
-            sb.append("\n").append(next);
-            if (next.startsWith(code + " ")) break;
+        if (signal.length() >= 4 && signal.charAt(3) == '-') {
+            String code = signal.substring(0, 3);
+            while (true) {
+                String next = Network_in.readLine();
+                if (next == null)
+                    break;
+                sb.append("\n").append(next);
+                if (next.startsWith(code + " "))
+                    break;
+            }
         }
+
+        int code = Integer.parseInt(signal.substring(0, 3));
+        return new FTPResponse(code, sb.toString());
     }
-    
-    int code = Integer.parseInt(signal.substring(0, 3));
-    return new FTPResponse(code, sb.toString());
-}
 
     public FTPResponse login(String username, String password) throws IOException {
         sendCommand("USER " + username);
@@ -57,33 +60,40 @@ public class FTPClient {
     }
 
     public FTPResponse pwd() throws IOException {
+        requireConnected();
         sendCommand("PWD");
         return readResponse();
     }
 
     public FTPResponse cwd(String path) throws IOException {
+        requireConnected();
         sendCommand("CWD " + path);
         return readResponse();
     }
 
     public FTPResponse mkd(String path) throws IOException {
+        requireConnected();
         sendCommand("MKD " + path);
         return readResponse();
     }
 
     public FTPResponse rmd(String path) throws IOException {
+        requireConnected();
         sendCommand("RMD " + path);
         return readResponse();
     }
 
     public FTPResponse dele(String path) throws IOException {
+        requireConnected();
         sendCommand("DELE " + path);
         return readResponse();
     }
 
     public void disconnect() throws IOException {
+        if (loginSocket != null && !loginSocket.isClosed()) {
         sendCommand("QUIT");
         loginSocket.close();
+        }
     }
 
     private Socket openPassive() throws IOException {
@@ -101,6 +111,7 @@ public class FTPClient {
     }
 
     public List<String> list() throws IOException {
+        requireConnected();
         Socket dataSocket = openPassive();
         sendCommand("LIST");
         FTPResponse read = readResponse();
@@ -118,49 +129,59 @@ public class FTPClient {
     }
 
     public void download(String remoteFile, String localPath) throws IOException {
+        requireConnected();
         sendCommand("TYPE I");
         readResponse();
 
-        Socket dataSocket = openPassive();
+        try(Socket dataSocket = openPassive()) {
         sendCommand("RETR " + remoteFile);
         FTPResponse read = readResponse();
 
-        InputStream in = dataSocket.getInputStream();
-        FileOutputStream out = new FileOutputStream(localPath);
+         if (read.code != 150 && read.code != 125) {
+            throw new IOException("Download failed: " + read);
+        }
+
+        try (InputStream in = dataSocket.getInputStream();
+        FileOutputStream out = new FileOutputStream(localPath)) {
         byte[] buf = new byte[4096];
         int n;
         while ((n = in.read(buf)) != -1) {
             out.write(buf, 0, n);
         }
-        in.close();
-        out.close();
-
-        dataSocket.close();
+    }
+}
         readResponse();
     }
 
-    public void upload(String localpath, String remoteFile) throws IOException{
-    sendCommand("TYPE I");
-    readResponse();
-    
-    Socket dataSocket = openPassive();
-    sendCommand("STOR " + remoteFile);
-    FTPResponse read = readResponse();
+    public void upload(String localpath, String remoteFile) throws IOException {
+        requireConnected();
+        sendCommand("TYPE I");
+        readResponse();
 
+        try (Socket dataSocket = openPassive()) {
+        sendCommand("STOR " + remoteFile);
+        FTPResponse read = readResponse();
 
-    FileInputStream in = new FileInputStream(localpath);
-    OutputStream out = dataSocket.getOutputStream();
+        if (read.code != 150 && read.code != 125) {
+        throw new IOException("Upload failed: " + read);
+        }
 
-    byte[] buf = new byte[4096];
-    int n;
-    while ((n = in.read(buf)) != -1) {
-        out.write(buf, 0, n);
+        try (FileInputStream in = new FileInputStream(localpath);
+        OutputStream out = dataSocket.getOutputStream()) {
+
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+            out.write(buf, 0, n);
+        }
     }
-    in.close();
-    out.close();
-
-    dataSocket.close();
-    readResponse();
-
 }
+        readResponse();
+    }
+
+    private void requireConnected() throws IOException {
+        if (loginSocket == null || loginSocket.isClosed() || Network_out == null) {
+            throw new IOException("Not connected to server. Please click Connect first.");
+        }
+    }
 }
